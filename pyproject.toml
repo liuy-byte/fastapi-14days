@@ -5,6 +5,9 @@ description = "FastAPI 14 天系统学习"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi[standard]",
+    "pyjwt>=2.0.0",
+    "passlib[bcrypt]>=1.7.0",
+    "python-multipart>=0.0.6",
 ]
 
 [project.optional-dependencies]

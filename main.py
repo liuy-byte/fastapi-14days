@@ -1,9 +1,11 @@
 """FastAPI 14 天系统学习 — 主应用文件"""
 
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, status
+import jwt
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
@@ -300,3 +302,79 @@ def admin_dashboard(
 ):
     """子依赖：先验证 token，再验证超级用户权限"""
     return {"can_access": True, "user": user}
+
+
+# ========== Day 7: JWT 安全认证 ==========
+
+SECRET_KEY = "fastapi-14days-secret-key-change-in-production"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+import bcrypt
+
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+
+
+def get_password_hash(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def get_current_user_from_token(token: Annotated[str, Depends(verify_token)]):
+    """从 JWT token 解析当前用户"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    if email not in USERS_DB:
+        raise HTTPException(status_code=404, detail="User not found")
+    return email
+
+
+@app.post("/auth/register", status_code=status.HTTP_201_CREATED)
+def register(user: UserCreate):
+    """注册用户"""
+    if user.email in USERS_DB:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    hashed = get_password_hash(user.password)
+    USERS_DB[user.email] = {
+        "email": user.email,
+        "hashed_password": hashed,
+        "full_name": user.full_name,
+    }
+    return UserPublic(email=user.email, full_name=user.full_name)
+
+
+@app.post("/auth/login")
+def login(
+    username: Annotated[str, Form(description="用户邮箱")],
+    password: Annotated[str, Form(description="密码")],
+):
+    """登录获取 JWT token"""
+    if username not in USERS_DB:
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    user = USERS_DB[username]
+    if not verify_password(password, user["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    access_token = create_access_token(data={"sub": username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get("/auth/me")
+def get_me(current_email: Annotated[str, Depends(get_current_user_from_token)]):
+    """获取当前登录用户信息"""
+    user = USERS_DB[current_email]
+    return UserPublic(email=user["email"], full_name=user["full_name"])
