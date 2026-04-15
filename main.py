@@ -1,6 +1,7 @@
 from typing import Annotated
 
-from fastapi import FastAPI, Path, Query
+from fastapi import FastAPI, Path, Query, status
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="FastAPI 14 Days")
 
@@ -72,3 +73,74 @@ def get_user_profile(
         "username": f"user_{user_id}",
         "bio": f"This is user {user_id}'s profile",
     }
+
+
+# Day 3: 请求体 + Pydantic 模型
+
+PRODUCTS_DB: list[dict] = []
+product_id_counter = 0
+
+
+class Image(BaseModel):
+    url: str
+    alt: str | None = None
+
+
+class ProductCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="商品名称")
+    price: float = Field(..., gt=0, description="商品价格")
+    description: str | None = Field(default=None, description="商品描述")
+    tags: list[str] = Field(default_factory=list, description="商品标签")
+    images: list[Image] = Field(default_factory=list, description="商品图片")
+
+
+class Product(BaseModel):
+    id: int
+    name: str
+    price: float
+    description: str | None
+    tags: list[str]
+    images: list[Image]
+
+
+class OrderItem(BaseModel):
+    product_id: int = Field(..., gt=0)
+    quantity: int = Field(..., gt=0)
+
+
+class OrderCreate(BaseModel):
+    customer_name: str = Field(..., min_length=1)
+    items: list[OrderItem] = Field(..., min_length=1)
+
+
+class Order(BaseModel):
+    id: int
+    customer_name: str
+    items: list[OrderItem]
+    total_price: float
+
+
+@app.post("/products", status_code=status.HTTP_201_CREATED)
+def create_product(product: ProductCreate) -> Product:
+    """创建商品"""
+    global product_id_counter
+    product_id_counter += 1
+    item = {"id": product_id_counter, **product.model_dump()}
+    PRODUCTS_DB.append(item)
+    return Product(**item)
+
+
+@app.post("/orders", status_code=status.HTTP_201_CREATED)
+def create_order(order: OrderCreate) -> Order:
+    """创建订单"""
+    global product_id_counter
+    product_id_counter += 1
+    total = 0.0
+    for it in order.items:
+        total += it.quantity * 100.0
+    return Order(
+        id=product_id_counter,
+        customer_name=order.customer_name,
+        items=order.items,
+        total_price=total,
+    )
