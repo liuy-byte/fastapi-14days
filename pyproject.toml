@@ -1,0 +1,14 @@
+[project]
+name = "fastapi-14days"
+version = "0.1.0"
+description = "FastAPI 14 天系统学习"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi[standard]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "httpx",
+]
