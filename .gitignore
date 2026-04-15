@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 *.pyo
 .ruff_cache/
+*.db
+*.egg-info/
