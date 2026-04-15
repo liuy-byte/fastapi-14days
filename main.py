@@ -3,7 +3,10 @@
 import time
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
 
 from models import (
     Image,
@@ -20,6 +23,53 @@ from models import (
 )
 
 app = FastAPI(title="FastAPI 14 Days")
+
+# ========== Day 6: 错误处理 + 中间件 + CORS ==========
+
+class ItemNotFoundException(Exception):
+    def __init__(self, item_id: int):
+        self.item_id = item_id
+
+
+@app.exception_handler(ItemNotFoundException)
+async def item_not_found_handler(request: Request, exc: ItemNotFoundException):
+    return JSONResponse(
+        status_code=404,
+        content={"code": 404, "message": f"Item {exc.item_id} not found"},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "code": 422,
+            "message": "Validation error",
+            "detail": exc.errors(),
+        },
+    )
+
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    import time
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(round(process_time * 1000, 2))
+    return response
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ========== Day 1: 基础接口 ==========
 
 # ========== Day 1: 基础接口 ==========
 
@@ -64,7 +114,13 @@ def get_item(item_id: int):
     for item in ITEMS_OLD:
         if item["id"] == item_id:
             return ItemResponse(id=item["id"], name=item["name"], price=item["price"], created_at=0)
-    raise HTTPException(status_code=404, detail="Item not found")
+    raise ItemNotFoundException(item_id)
+
+
+@app.get("/items/{item_id}/trigger-not-found")
+def trigger_not_found(item_id: int):
+    """触发自定义异常"""
+    raise ItemNotFoundException(item_id)
 
 
 @app.get("/items")
