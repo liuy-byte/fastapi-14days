@@ -3,7 +3,7 @@
 import time
 from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Path, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, status
 
 from models import (
     Image,
@@ -155,3 +155,92 @@ def update_item(item_id: int, item_update: ItemUpdate):
             item.update(item_update.model_dump(exclude_unset=True))
             return ItemResponse(**item)
     raise HTTPException(status_code=404, detail="Item not found")
+
+
+# ========== Day 5: 依赖注入 ==========
+
+# 模拟数据库连接管理
+_db_connection_count = 0
+_db_close_count = 0
+
+
+def get_db():
+    """yield 依赖：管理数据库连接生命周期"""
+    global _db_connection_count, _db_close_count
+    _db_connection_count += 1
+    yield {"connected": True, "request_id": _db_connection_count}
+    _db_close_count += 1
+
+
+def verify_token(authorization: Annotated[str | None, Header()] = None):
+    """鉴权依赖：从 Header 解析 token"""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authentication scheme")
+    token = authorization[7:]
+    if token == "invalid":
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return token
+
+
+def require_superuser(current_user: Annotated[str, Depends(verify_token)]):
+    """子依赖：必须在已认证基础上检查超级用户权限"""
+    if "alice" not in current_user and "admin" not in current_user:
+        raise HTTPException(status_code=403, detail="Superuser required")
+    return current_user
+
+
+class PaginationParams:
+    """分页依赖：封装 skip 和 limit"""
+    def __init__(self, skip: int = 0, limit: int = 10):
+        self.skip = skip
+        self.limit = limit
+
+
+def get_pagination(
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+) -> PaginationParams:
+    return PaginationParams(skip=skip, limit=limit)
+
+
+POSTS_DB = [{"id": i, "title": f"文章{i}", "author": "alice"} for i in range(1, 21)]
+
+
+@app.get("/posts")
+def list_posts(pagination: Annotated[PaginationParams, Depends(get_pagination)]):
+    """使用分页依赖的列表接口"""
+    skip, limit = pagination.skip, pagination.limit
+    return {
+        "total": len(POSTS_DB),
+        "skip": skip,
+        "limit": limit,
+        "posts": POSTS_DB[skip : skip + limit],
+    }
+
+
+@app.get("/posts/me")
+def get_my_posts(
+    token: Annotated[str, Depends(verify_token)],
+    db: Annotated[dict, Depends(get_db)],
+):
+    """需要认证的接口"""
+    return {"token": token, "db_request_id": db["request_id"]}
+
+
+@app.get("/admin/stats")
+def admin_stats(db: Annotated[dict, Depends(get_db)]):
+    """使用 yield 依赖"""
+    return {
+        "db_connected": db["connected"],
+        "db_closed": True,  # yield 依赖会在响应后自动清理
+    }
+
+
+@app.get("/admin/dashboard")
+def admin_dashboard(
+    user: Annotated[str, Depends(require_superuser)],
+):
+    """子依赖：先验证 token，再验证超级用户权限"""
+    return {"can_access": True, "user": user}
