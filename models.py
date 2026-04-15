@@ -1,42 +1,46 @@
-"""Day 3-4: Pydantic 数据模型"""
+"""Day 3-8: 数据模型（SQLModel）"""
 
-from pydantic import BaseModel, EmailStr, Field
+from datetime import datetime
+from typing import Optional
+
+from pydantic import EmailStr
+from sqlmodel import Field, Relationship, SQLModel
 
 
 # Day 3: 请求体模型
-class Image(BaseModel):
+class Image(SQLModel):
     url: str
-    alt: str | None = None
+    alt: Optional[str] = None
 
 
-class ProductCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100, description="商品名称")
-    price: float = Field(..., gt=0, description="商品价格")
-    description: str | None = Field(default=None, description="商品描述")
-    tags: list[str] = Field(default_factory=list, description="商品标签")
-    images: list[Image] = Field(default_factory=list, description="商品图片")
+class ProductCreate(SQLModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    price: float = Field(..., gt=0)
+    description: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    images: list[Image] = Field(default_factory=list)
 
 
-class Product(BaseModel):
+class Product(SQLModel):
     id: int
     name: str
     price: float
-    description: str | None
+    description: Optional[str]
     tags: list[str]
     images: list[Image]
 
 
-class OrderItem(BaseModel):
+class OrderItem(SQLModel):
     product_id: int = Field(..., gt=0)
     quantity: int = Field(..., gt=0)
 
 
-class OrderCreate(BaseModel):
+class OrderCreate(SQLModel):
     customer_name: str = Field(..., min_length=1)
     items: list[OrderItem] = Field(..., min_length=1)
 
 
-class Order(BaseModel):
+class Order(SQLModel):
     id: int
     customer_name: str
     items: list[OrderItem]
@@ -44,36 +48,75 @@ class Order(BaseModel):
 
 
 # Day 4: 响应模型
-class UserCreate(BaseModel):
+class UserCreate(SQLModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
-    full_name: str | None = None
+    full_name: Optional[str] = None
 
 
-class UserPublic(BaseModel):
+class UserPublic(SQLModel):
     email: EmailStr
-    full_name: str | None
-    model_config = {"from_attributes": True}
+    full_name: Optional[str]
 
 
-class UserInDB(BaseModel):
+class UserInDB(SQLModel):
     email: EmailStr
     hashed_password: str
-    full_name: str | None
+    full_name: Optional[str]
 
 
-class ItemCreate(BaseModel):
+class ItemCreate(SQLModel):
     name: str = Field(..., min_length=1)
     price: float = Field(..., gt=0)
 
 
-class ItemUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1)
-    price: float | None = Field(default=None, gt=0)
+class ItemUpdate(SQLModel):
+    name: Optional[str] = Field(default=None, min_length=1)
+    price: Optional[float] = Field(default=None, gt=0)
 
 
-class ItemResponse(BaseModel):
+class ItemResponse(SQLModel):
     id: int
     name: str
     price: float
     created_at: float
+
+
+# Day 8: SQLModel 数据库模型
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(unique=True, index=True)
+    hashed_password: str
+    full_name: Optional[str] = None
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Todo(SQLModel, table=True):
+    __tablename__ = "todos"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = None
+    completed: bool = False
+    owner_id: int = Field(foreign_key="users.id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TodoCreate(SQLModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = None
+    completed: bool = False
+
+
+class TodoPublic(SQLModel):
+    id: int
+    title: str
+    description: Optional[str]
+    completed: bool
+    created_at: datetime
+
+
+class Token(SQLModel):
+    access_token: str
+    token_type: str = "bearer"

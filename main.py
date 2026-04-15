@@ -1,28 +1,20 @@
-"""FastAPI 14 天系统学习 — 主应用文件"""
+"""FastAPI 14 天系统学习 — 主应用文件（Day 8 重构版）"""
 
 import time
-from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-import jwt
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Path, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlmodel import select
 from starlette.middleware.cors import CORSMiddleware
 
-from models import (
-    Image,
-    ItemCreate,
-    ItemResponse,
-    ItemUpdate,
-    Order,
-    OrderCreate,
-    OrderItem,
-    Product,
-    ProductCreate,
-    UserCreate,
-    UserPublic,
-)
+from api.deps import SessionDep
+from api.routes.auth import router as todos_router  # auth.py 实际包含 todos 路由
+from api.routes.todos import router as auth_router  # todos.py 实际包含 auth 路由
+from core.db import create_db_and_tables, engine
+from core.security import decode_token
+from models import Image, ItemCreate, ItemResponse, ItemUpdate, Order, OrderCreate, OrderItem, Product, ProductCreate, UserCreate, UserPublic
 
 app = FastAPI(title="FastAPI 14 Days")
 
@@ -35,31 +27,19 @@ class ItemNotFoundException(Exception):
 
 @app.exception_handler(ItemNotFoundException)
 async def item_not_found_handler(request: Request, exc: ItemNotFoundException):
-    return JSONResponse(
-        status_code=404,
-        content={"code": 404, "message": f"Item {exc.item_id} not found"},
-    )
+    return JSONResponse(status_code=404, content={"code": 404, "message": f"Item {exc.item_id} not found"})
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={
-            "code": 422,
-            "message": "Validation error",
-            "detail": exc.errors(),
-        },
-    )
+    return JSONResponse(status_code=422, content={"code": 422, "message": "Validation error", "detail": exc.errors()})
 
 
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
-    import time
     start_time = time.time()
     response = await call_next(request)
-    process_time = time.time() - start_time
-    response.headers["X-Process-Time"] = str(round(process_time * 1000, 2))
+    response.headers["X-Process-Time"] = str(round((time.time() - start_time) * 1000, 2))
     return response
 
 
@@ -73,12 +53,12 @@ app.add_middleware(
 
 # ========== Day 1: 基础接口 ==========
 
-# ========== Day 1: 基础接口 ==========
-
 ITEMS_OLD = [
     {"id": i, "name": f"商品{i}", "price": 100 + i, "category": "electronics" if i % 2 == 0 else "books"}
     for i in range(1, 51)
 ]
+ITEMS_DB: list[dict] = []
+item_counter = 10
 
 
 @app.get("/")
@@ -93,7 +73,7 @@ def health():
 
 @app.get("/about")
 def about():
-    return {"name": "fastapi-14days", "version": "0.1.0", "description": "FastAPI 14 天系统学习"}
+    return {"name": "fastapi-14days", "version": "0.1.0"}
 
 
 @app.get("/greet/{name}")
@@ -103,13 +83,8 @@ def greet(name: str):
 
 # ========== Day 2: 路径参数 + 查询参数 ==========
 
-ITEMS_DB: list[dict] = []
-item_counter = 10
-
-
 @app.get("/items/{item_id}", response_model=ItemResponse)
 def get_item(item_id: int):
-    """根据 ID 获取指定商品"""
     for item in ITEMS_DB:
         if item["id"] == item_id:
             return ItemResponse(**item)
@@ -119,21 +94,14 @@ def get_item(item_id: int):
     raise ItemNotFoundException(item_id)
 
 
-@app.get("/items/{item_id}/trigger-not-found")
-def trigger_not_found(item_id: int):
-    """触发自定义异常"""
-    raise ItemNotFoundException(item_id)
-
-
 @app.get("/items")
 def list_items(
-    skip: Annotated[int, Query(ge=0, description="跳过的条数")] = 0,
-    limit: Annotated[int, Query(ge=1, le=100, description="返回条数")] = 10,
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
     category: str | None = None,
     sort_by: str | None = None,
     order: str | None = "asc",
 ):
-    """分页列表接口，支持筛选和排序"""
     filtered = ITEMS_OLD if category is None else [i for i in ITEMS_OLD if i["category"] == category]
     if sort_by and sort_by in ("price", "name"):
         filtered = sorted(filtered, key=lambda x: x[sort_by], reverse=(order == "desc"))
@@ -141,9 +109,7 @@ def list_items(
 
 
 @app.get("/users/{user_id}/profile")
-def get_user_profile(
-    user_id: Annotated[int, Path(ge=1, description="用户ID")],
-):
+def get_user_profile(user_id: Annotated[int, Path(ge=1)]):
     return {"user_id": user_id, "username": f"user_{user_id}", "bio": f"This is user {user_id}'s profile"}
 
 
@@ -154,7 +120,7 @@ product_id_counter = 0
 
 
 @app.post("/products", status_code=status.HTTP_201_CREATED)
-def create_product(product: ProductCreate) -> Product:
+def create_product(product: ProductCreate):
     global product_id_counter
     product_id_counter += 1
     item = {"id": product_id_counter, **product.model_dump()}
@@ -163,41 +129,35 @@ def create_product(product: ProductCreate) -> Product:
 
 
 @app.post("/orders", status_code=status.HTTP_201_CREATED)
-def create_order(order: OrderCreate) -> Order:
+def create_order(order: OrderCreate):
     global product_id_counter
     product_id_counter += 1
     total = sum(it.quantity * 100.0 for it in order.items)
     return Order(id=product_id_counter, customer_name=order.customer_name, items=order.items, total_price=total)
 
 
-# ========== Day 4: 响应模型 + 输入输出分离 ==========
+# ========== Day 4: 响应模型 ==========
 
-USERS_DB: dict[str, dict] = {}
+USERS_DB: dict = {}
 
 
 @app.post("/users", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
 def create_user(user: UserCreate):
-    """注册用户——响应不包含密码"""
-    USERS_DB[user.email] = {
-        "email": user.email,
-        "hashed_password": f"hashed_{user.password}",
-        "full_name": user.full_name,
-    }
+    if user.email in USERS_DB:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    USERS_DB[user.email] = {"email": user.email, "full_name": user.full_name, "password": user.password}
     return UserPublic(email=user.email, full_name=user.full_name)
 
 
 @app.get("/users/{email}", response_model=UserPublic)
 def get_user(email: str):
-    """获取用户信息——响应不包含密码"""
     if email not in USERS_DB:
         raise HTTPException(status_code=404, detail="User not found")
-    db_user = USERS_DB[email]
-    return UserPublic(email=db_user["email"], full_name=db_user["full_name"])
+    return UserPublic(email=USERS_DB[email]["email"], full_name=USERS_DB[email].get("full_name"))
 
 
 @app.post("/items", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
 def create_item(item: ItemCreate):
-    """创建商品——返回包含 id 和 created_at"""
     global item_counter
     item_counter += 1
     new_item = {"id": item_counter, "name": item.name, "price": item.price, "created_at": time.time()}
@@ -207,23 +167,21 @@ def create_item(item: ItemCreate):
 
 @app.patch("/items/{item_id}", response_model=ItemResponse)
 def update_item(item_id: int, item_update: ItemUpdate):
-    """部分更新商品"""
     for item in ITEMS_DB:
         if item["id"] == item_id:
-            item.update(item_update.model_dump(exclude_unset=True))
+            update_data = item_update.model_dump(exclude_unset=True)
+            item.update({k: v for k, v in update_data.items() if v is not None})
             return ItemResponse(**item)
     raise HTTPException(status_code=404, detail="Item not found")
 
 
 # ========== Day 5: 依赖注入 ==========
 
-# 模拟数据库连接管理
 _db_connection_count = 0
 _db_close_count = 0
 
 
 def get_db():
-    """yield 依赖：管理数据库连接生命周期"""
     global _db_connection_count, _db_close_count
     _db_connection_count += 1
     yield {"connected": True, "request_id": _db_connection_count}
@@ -231,7 +189,6 @@ def get_db():
 
 
 def verify_token(authorization: Annotated[str | None, Header()] = None):
-    """鉴权依赖：从 Header 解析 token"""
     if not authorization:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if not authorization.startswith("Bearer "):
@@ -243,39 +200,14 @@ def verify_token(authorization: Annotated[str | None, Header()] = None):
 
 
 def require_superuser(current_user: Annotated[str, Depends(verify_token)]):
-    """子依赖：必须在已认证基础上检查超级用户权限"""
     if "alice" not in current_user and "admin" not in current_user:
         raise HTTPException(status_code=403, detail="Superuser required")
     return current_user
 
 
-class PaginationParams:
-    """分页依赖：封装 skip 和 limit"""
-    def __init__(self, skip: int = 0, limit: int = 10):
-        self.skip = skip
-        self.limit = limit
-
-
-def get_pagination(
-    skip: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=100)] = 10,
-) -> PaginationParams:
-    return PaginationParams(skip=skip, limit=limit)
-
-
-POSTS_DB = [{"id": i, "title": f"文章{i}", "author": "alice"} for i in range(1, 21)]
-
-
 @app.get("/posts")
-def list_posts(pagination: Annotated[PaginationParams, Depends(get_pagination)]):
-    """使用分页依赖的列表接口"""
-    skip, limit = pagination.skip, pagination.limit
-    return {
-        "total": len(POSTS_DB),
-        "skip": skip,
-        "limit": limit,
-        "posts": POSTS_DB[skip : skip + limit],
-    }
+def list_posts(skip: int = 0, limit: int = 10):
+    return {"total": len(POSTS_DB), "skip": skip, "limit": limit, "posts": POSTS_DB[skip : skip + limit]}
 
 
 @app.get("/posts/me")
@@ -283,98 +215,30 @@ def get_my_posts(
     token: Annotated[str, Depends(verify_token)],
     db: Annotated[dict, Depends(get_db)],
 ):
-    """需要认证的接口"""
     return {"token": token, "db_request_id": db["request_id"]}
 
 
 @app.get("/admin/stats")
 def admin_stats(db: Annotated[dict, Depends(get_db)]):
-    """使用 yield 依赖"""
-    return {
-        "db_connected": db["connected"],
-        "db_closed": True,  # yield 依赖会在响应后自动清理
-    }
+    return {"db_connected": db["connected"], "db_closed": True}
 
 
 @app.get("/admin/dashboard")
-def admin_dashboard(
-    user: Annotated[str, Depends(require_superuser)],
-):
-    """子依赖：先验证 token，再验证超级用户权限"""
+def admin_dashboard(user: Annotated[str, Depends(require_superuser)]):
     return {"can_access": True, "user": user}
 
+POSTS_DB = [{"id": i, "title": f"文章{i}", "author": "alice"} for i in range(1, 21)]
 
-# ========== Day 7: JWT 安全认证 ==========
+# ========== Day 8: 注册路由 ==========
 
-SECRET_KEY = "fastapi-14days-secret-key-change-in-production"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-import bcrypt
-
-
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+# 修复: 添加 trigger-not-found 端点供 Day 6 测试用
+@app.get("/items/{item_id}/trigger-not-found")
+def trigger_not_found(item_id: int):
+    raise ItemNotFoundException(item_id)
+app.include_router(auth_router)
+app.include_router(todos_router)
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
-
-
-def get_password_hash(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-
-def get_current_user_from_token(token: Annotated[str, Depends(verify_token)]):
-    """从 JWT token 解析当前用户"""
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    if email not in USERS_DB:
-        raise HTTPException(status_code=404, detail="User not found")
-    return email
-
-
-@app.post("/auth/register", status_code=status.HTTP_201_CREATED)
-def register(user: UserCreate):
-    """注册用户"""
-    if user.email in USERS_DB:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    hashed = get_password_hash(user.password)
-    USERS_DB[user.email] = {
-        "email": user.email,
-        "hashed_password": hashed,
-        "full_name": user.full_name,
-    }
-    return UserPublic(email=user.email, full_name=user.full_name)
-
-
-@app.post("/auth/login")
-def login(
-    username: Annotated[str, Form(description="用户邮箱")],
-    password: Annotated[str, Form(description="密码")],
-):
-    """登录获取 JWT token"""
-    if username not in USERS_DB:
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-    user = USERS_DB[username]
-    if not verify_password(password, user["hashed_password"]):
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-    access_token = create_access_token(data={"sub": username})
-    return {"access_token": access_token, "token_type": "bearer"}
-
-
-@app.get("/auth/me")
-def get_me(current_email: Annotated[str, Depends(get_current_user_from_token)]):
-    """获取当前登录用户信息"""
-    user = USERS_DB[current_email]
-    return UserPublic(email=user["email"], full_name=user["full_name"])
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
